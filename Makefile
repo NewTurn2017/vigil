@@ -6,6 +6,8 @@ LAUNCH_AGENT := $(HOME)/Library/LaunchAgents/$(PLIST).plist
 LOG := $(HOME)/Library/Logs/br-agent.log
 DOMAIN := gui/$(shell id -u)
 SUDOERS := /etc/sudoers.d/br
+AWAKE_PLIST := com.genie.br.awake
+AWAKE_LAUNCH_AGENT := $(HOME)/Library/LaunchAgents/$(AWAKE_PLIST).plist
 
 .PHONY: all test install uninstall hotkey-install hotkey-uninstall sleep-setup sleep-teardown clean
 
@@ -36,12 +38,18 @@ hotkey-install:
 	launchctl bootout $(DOMAIN)/$(PLIST) 2>/dev/null || true
 	launchctl bootstrap $(DOMAIN) "$(LAUNCH_AGENT)"
 	launchctl kickstart -k $(DOMAIN)/$(PLIST)
-	@echo "hotkey agent loaded (default key: ctrl-opt-cmd-B). Logs: $(LOG)"
+	cp launchd/$(AWAKE_PLIST).plist.template "$(AWAKE_LAUNCH_AGENT)"
+	launchctl bootout $(DOMAIN)/$(AWAKE_PLIST) 2>/dev/null || true
+	launchctl bootstrap $(DOMAIN) "$(AWAKE_LAUNCH_AGENT)"
+	@echo "hotkey agent + keep-awake job loaded (awake starts OFF; default key ctrl-opt-cmd-B)."
+	@echo "Logs: $(LOG)"
 
 hotkey-uninstall:
 	launchctl bootout $(DOMAIN)/$(PLIST) 2>/dev/null || true
 	rm -f "$(LAUNCH_AGENT)"
-	@echo "hotkey agent unloaded"
+	launchctl bootout $(DOMAIN)/$(AWAKE_PLIST) 2>/dev/null || true
+	rm -f "$(AWAKE_LAUNCH_AGENT)"
+	@echo "hotkey agent + keep-awake job unloaded"
 
 sleep-setup:
 	@u=$${SUDO_USER:-$$(id -un)}; \
