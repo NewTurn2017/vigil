@@ -96,6 +96,51 @@ checkEqual(actionID(.work), 4, "actionID work = 4")
 checkEqual(actionID(.away), 5, "actionID away = 5")
 checkEqual(actionID(.sleep), 6, "actionID sleep = 6")
 
+// === display-awake assertion (the away no-lock fix; integration, non-destructive) ===
+func pmsetAssertions() -> String {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
+    p.arguments = ["-g", "assertions"]
+    let out = Pipe()
+    p.standardOutput = out
+    p.standardError = FileHandle.nullDevice
+    do { try p.run() } catch { return "" }
+    let data = out.fileHandleForReading.readDataToEndOfFile()
+    p.waitUntilExit()
+    return String(data: data, encoding: .utf8) ?? ""
+}
+let assertionName = "Vigil: keep display awake (no idle lock)"
+check(!pmsetAssertions().contains(assertionName), "no display assertion held before hold")
+holdDisplayAwake()
+check(displayAssertionHeld, "displayAssertionHeld true after holdDisplayAwake()")
+check(pmsetAssertions().contains(assertionName), "PreventUserIdleDisplaySleep assertion visible to OS while away")
+holdDisplayAwake()  // idempotent: second hold must not leak a second assertion
+check(displayAssertionHeld, "second holdDisplayAwake() is a no-op")
+releaseDisplayAwake()
+check(!displayAssertionHeld, "displayAssertionHeld false after releaseDisplayAwake()")
+check(!pmsetAssertions().contains(assertionName), "assertion gone from OS after release (work/sleep won't lock-block)")
+
+// === auto-away: duration + threshold config parsing ===
+checkEqual(parseDurationSeconds("10m") ?? -1, 600, "10m -> 600s")
+checkEqual(parseDurationSeconds("90s") ?? -1, 90, "90s -> 90s")
+checkEqual(parseDurationSeconds("600") ?? -1, 600, "bare 600 -> 600s")
+checkEqual(parseDurationSeconds("off") ?? -1, 0, "off -> 0 (disabled)")
+checkEqual(parseDurationSeconds("never") ?? -1, 0, "never -> 0 (disabled)")
+check(parseDurationSeconds("abc") == nil, "abc -> nil")
+checkEqual(parseAutoAwaySeconds("away = ctrl+opt+cmd+9\nautoaway = 10m\n"), 600, "autoaway=10m parsed")
+checkEqual(parseAutoAwaySeconds("idle = 5m"), 300, "idle=5m alias parsed")
+checkEqual(parseAutoAwaySeconds("auto-away = 45s"), 45, "auto-away=45s alias parsed")
+checkEqual(parseAutoAwaySeconds("autoaway = off"), 0, "autoaway=off disables")
+checkEqual(parseAutoAwaySeconds("work = ctrl+opt+cmd+0"), 600, "no autoaway line -> default 600")
+checkEqual(parseAutoAwaySeconds("# autoaway = 1m\nautoaway = 2m"), 120, "commented line ignored, real one wins")
+
+// === auto-away: fire decision (pure) ===
+check(shouldAutoAway(idleSeconds: 600, threshold: 600, awayActive: false), "idle==threshold, not away -> fire")
+check(shouldAutoAway(idleSeconds: 601, threshold: 600, awayActive: false), "idle>threshold -> fire")
+check(!shouldAutoAway(idleSeconds: 599, threshold: 600, awayActive: false), "idle<threshold -> no fire")
+check(!shouldAutoAway(idleSeconds: 9999, threshold: 600, awayActive: true), "already away (overlays up) -> no fire")
+check(!shouldAutoAway(idleSeconds: 9999, threshold: 0, awayActive: false), "threshold 0 (disabled) -> no fire")
+
 // === SUMMARY (keep last) ===
 print("\n\(testsRun - testsFailed)/\(testsRun) passed")
 exit(testsFailed == 0 ? 0 : 1)

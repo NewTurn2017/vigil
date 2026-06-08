@@ -1,6 +1,8 @@
 import Foundation
 import Cocoa
 import Carbon.HIToolbox
+import IOKit
+import IOKit.pwr_mgt
 
 struct Hotkey: Equatable {
     var keyCode: UInt32
@@ -91,6 +93,8 @@ func parseBindings(_ text: String) -> [Binding] {
             case "work":   action = .work
             case "away":   action = .away
             case "sleep":  action = .sleep
+            case "autoaway", "auto-away", "idle":
+                continue   // not a hotkey; the idle-away threshold (see parseAutoAwaySeconds)
             default:
                 errPrint("vigil: unknown action '\(lhs)' (use on/off/toggle/work/away/sleep), skipping")
                 continue
@@ -118,6 +122,64 @@ func loadBindings() -> [Binding] {
         return [Binding(hotkey: defaultHotkey, action: .toggle)]
     }
     return bindings
+}
+
+/// Parse a duration like "10m", "90s", "600" (bare = seconds), or "off"/"0" (disabled).
+/// Returns nil if unparseable.
+func parseDurationSeconds(_ s: String) -> Double? {
+    let t = s.lowercased().trimmingCharacters(in: .whitespaces)
+    if t == "off" || t == "none" || t == "never" { return 0 }
+    if t.hasSuffix("m"), let v = Double(t.dropLast()) { return v * 60 }
+    if t.hasSuffix("s"), let v = Double(t.dropLast()) { return v }
+    if let v = Double(t) { return v }       // bare number = seconds
+    return nil
+}
+
+/// The idle-away threshold (seconds) from config: `autoaway = 10m` (or `idle = ...`).
+/// Defaults to 600s (10 min). 0 means auto-away is disabled.
+func parseAutoAwaySeconds(_ text: String) -> Double {
+    for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
+        let line = rawLine.trimmingCharacters(in: .whitespaces)
+        if line.isEmpty || line.hasPrefix("#") { continue }
+        guard let eq = line.firstIndex(of: "=") else { continue }
+        let key = line[..<eq].trimmingCharacters(in: .whitespaces).lowercased()
+        guard key == "autoaway" || key == "auto-away" || key == "idle" else { continue }
+        if let secs = parseDurationSeconds(String(line[line.index(after: eq)...])) {
+            return max(0, secs)
+        }
+    }
+    return 600
+}
+
+/// Load the idle-away threshold from ~/.config/vigil/hotkey.conf (default 600s).
+func loadAutoAwaySeconds() -> Double {
+    let url = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".config/vigil/hotkey.conf")
+    guard let raw = try? String(contentsOf: url, encoding: .utf8) else { return 600 }
+    return parseAutoAwaySeconds(raw)
+}
+
+/// Seconds since the last user input (keyboard/mouse), from IOHIDSystem's HIDIdleTime.
+/// Returns 0 if it can't be read (so auto-away simply won't fire on error).
+func systemIdleSeconds() -> Double {
+    var iter: io_iterator_t = 0
+    guard IOServiceGetMatchingServices(kIOMainPortDefault,
+                                       IOServiceMatching("IOHIDSystem"), &iter) == KERN_SUCCESS else { return 0 }
+    defer { IOObjectRelease(iter) }
+    let entry = IOIteratorNext(iter)
+    guard entry != 0 else { return 0 }
+    defer { IOObjectRelease(entry) }
+    var unmanaged: Unmanaged<CFMutableDictionary>?
+    guard IORegistryEntryCreateCFProperties(entry, &unmanaged, kCFAllocatorDefault, 0) == KERN_SUCCESS,
+          let props = unmanaged?.takeRetainedValue() as? [String: Any],
+          let idle = props["HIDIdleTime"] as? NSNumber else { return 0 }
+    return idle.doubleValue / 1_000_000_000.0   // HIDIdleTime is nanoseconds
+}
+
+/// Pure decision: should auto-away fire now? Fires only when enabled (threshold > 0),
+/// the machine has been idle long enough, and we're not already in away (overlays up).
+func shouldAutoAway(idleSeconds: Double, threshold: Double, awayActive: Bool) -> Bool {
+    return threshold > 0 && idleSeconds >= threshold && !awayActive
 }
 
 /// Fixed Carbon hotkey id per action — lets the (stateless) event handler tell them apart.
@@ -156,6 +218,42 @@ private func performAction(id: UInt32) {
 // external monitors, which DisplayServices brightness cannot touch — without using
 // display sleep (so macOS never locks / asks for a password).
 nonisolated(unsafe) var overlayWindows: [NSWindow] = []
+
+// Display-sleep power assertion held CONTINUOUSLY by the agent (taken at launch).
+// macOS runs its own idle timer (`pmset displaysleep`) that turns the display off on
+// schedule — which trips the lock screen / password. PreventUserIdleSystemSleep
+// (caffeinate -i) does NOT stop that; only a display assertion does. Holding it for
+// the agent's whole lifetime means the OS never blanks/locks the display on its own —
+// the screen only goes dark via `away` (brightness 0 + overlay, no lock) or is slept
+// explicitly via `sleep` (pmset sleepnow, which forced sleep ignores this assertion).
+nonisolated(unsafe) var displayAssertionID = IOPMAssertionID(0)
+nonisolated(unsafe) var displayAssertionHeld = false
+
+/// Prevent the OS idle display-sleep timer from ever firing (so no lock). No-op if
+/// already held.
+func holdDisplayAwake() {
+    guard !displayAssertionHeld else { return }
+    var id = IOPMAssertionID(0)
+    let r = IOPMAssertionCreateWithName(
+        kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString,
+        IOPMAssertionLevel(kIOPMAssertionLevelOn),
+        "Vigil: keep display awake (no idle lock)" as CFString,
+        &id)
+    if r == kIOReturnSuccess {
+        displayAssertionID = id
+        displayAssertionHeld = true
+    } else {
+        errPrint("vigil: could not hold display-awake assertion (IOReturn \(r))")
+    }
+}
+
+/// Release the display assertion, letting macOS resume its normal idle timers.
+func releaseDisplayAwake() {
+    guard displayAssertionHeld else { return }
+    IOPMAssertionRelease(displayAssertionID)
+    displayAssertionHeld = false
+    displayAssertionID = IOPMAssertionID(0)
+}
 
 /// Cover every display with an opaque black, top-level window.
 func showOverlays() {
@@ -225,6 +323,25 @@ func runAgent() -> Int32 {
     CFNotificationCenterAddObserver(darwin, nil, { _, _, _, _, _ in
         DispatchQueue.main.async { hideOverlays() }
     }, "com.genie.vigil.overlay.off" as CFString, nil, .deliverImmediately)
+
+    // Hold the display-sleep assertion for the agent's whole life: macOS never blanks
+    // or locks the display on its own schedule. The screen only goes dark via `away`
+    // (auto or hotkey) or is slept explicitly via `sleep`.
+    holdDisplayAwake()
+
+    // Auto-away: when the machine has been idle past the threshold and we're not
+    // already dark, fire `away` (dark, no lock). Re-arms once `work` clears the overlays.
+    let autoAwaySeconds = loadAutoAwaySeconds()
+    if autoAwaySeconds > 0 {
+        let poll = min(max(autoAwaySeconds / 4, 5), 30)   // check cadence, 5–30s
+        Timer.scheduledTimer(withTimeInterval: poll, repeats: true) { _ in
+            if shouldAutoAway(idleSeconds: systemIdleSeconds(),
+                              threshold: autoAwaySeconds,
+                              awayActive: !overlayWindows.isEmpty) {
+                _ = runAway()
+            }
+        }
+    }
 
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)   // headless: no Dock icon, no menu bar
