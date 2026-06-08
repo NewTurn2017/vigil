@@ -16,10 +16,12 @@ private func launchctl(_ args: [String]) -> Int32 {
     return p.terminationStatus
 }
 
-/// Start (or restart) the keep-awake caffeinate job. Returns false if the job
-/// is not loaded (i.e. `make hotkey-install` has not run).
+/// Ensure the keep-awake caffeinate job is running. No-op if already running (so we
+/// never kill a live assertion and trip launchd's respawn throttle). Returns false
+/// only if the job is not loaded (i.e. `make hotkey-install` has not run).
 func awakeEnsureOn() -> Bool {
-    return launchctl(["kickstart", "-k", awakeTarget()]) == 0
+    if awakeIsOn() { return true }
+    return launchctl(["kickstart", awakeTarget()]) == 0
 }
 
 /// Stop the keep-awake job (the launchd job stays loaded but idle).
