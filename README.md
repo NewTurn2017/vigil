@@ -82,9 +82,31 @@ Agent logs: `~/Library/Logs/br-agent.log`. If you pick a combo macOS already own
 (e.g. `cmd+space`), the agent logs a "could not register" line and your other keys
 still work.
 
+### Clamshell mode (keep the Mac awake with the lid closed)
+
+`br off` can also disable system sleep, so you can shut the lid and keep the Mac
+running headless (clamshell). `br on` restores normal sleep. This is **opt-in** and
+needs a one-time, tightly-scoped sudo rule — passwordless `pmset` for *only* the two
+clamshell commands — so it also works from the hotkey when the screen is black:
+
+```bash
+make sleep-setup      # installs /etc/sudoers.d/br (asks your password once)
+```
+
+After setup:
+
+- `br off` / hotkey-to-0 → brightness 0% **and** `pmset disablesleep 1` (stays awake, lid closed)
+- `br on` / hotkey-to-100 → brightness 100% **and** `pmset disablesleep 0` (normal sleep)
+- `br 50` and other mid values don't touch sleep
+
+Check it: `br off; pmset -g | grep SleepDisabled` shows `1`; `br on` shows `0`.
+
+Without setup, `br` never touches sleep — brightness still works exactly as before.
+
 ### Uninstall
 
 ```bash
+make sleep-teardown                         # remove the sudo sleep rule
 make hotkey-uninstall PREFIX=$HOME/.local   # remove the hotkey agent
 make uninstall PREFIX=$HOME/.local          # remove the binary
 ```
@@ -197,9 +219,31 @@ toggle = ctrl+opt+cmd+b
 에이전트 로그: `~/Library/Logs/br-agent.log`. macOS가 이미 쓰는 조합(예:
 `cmd+space`)을 고르면 "could not register" 로그가 남고 나머지 키는 정상 동작합니다.
 
+### 클램쉘 모드 (덮개를 닫아도 깨어있게)
+
+`br off`는 시스템 잠들기까지 끌 수 있어, 노트북 덮개를 닫고도 맥을 계속 켜둘 수
+있습니다(클램쉘). `br on`은 정상 잠들기로 되돌립니다. 이 기능은 **선택 사항**이며,
+화면이 꺼진 상태에서 단축키로도 동작하도록 비밀번호 없이 실행되는 **아주 좁은
+범위의** sudo 규칙(딱 두 개의 `pmset` 명령만 허용)을 한 번 설치해야 합니다:
+
+```bash
+make sleep-setup      # /etc/sudoers.d/br 설치 (비밀번호 한 번 입력)
+```
+
+설치 후:
+
+- `br off` / 단축키 끄기 → 밝기 0% **그리고** `pmset disablesleep 1` (덮개 닫아도 깨어있음)
+- `br on` / 단축키 켜기 → 밝기 100% **그리고** `pmset disablesleep 0` (정상 잠들기)
+- `br 50` 등 중간 값은 잠들기를 건드리지 않음
+
+확인: `br off; pmset -g | grep SleepDisabled` → `1`, `br on` → `0`.
+
+설치하지 않으면 `br`은 잠들기를 전혀 건드리지 않으며 밝기 제어는 그대로 동작합니다.
+
 ### 제거
 
 ```bash
+make sleep-teardown                         # sudo 잠들기 규칙 제거
 make hotkey-uninstall PREFIX=$HOME/.local   # 단축키 에이전트 제거
 make uninstall PREFIX=$HOME/.local          # 실행 파일 제거
 ```

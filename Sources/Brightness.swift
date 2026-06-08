@@ -63,10 +63,13 @@ struct BuiltinDisplay {
         guard ds.set(id, clamped) == 0 else { throw BrightnessError.setFailed }
     }
 
-    /// If lit (> eps), go dark; otherwise go to 100%.
-    func toggle() throws {
+    /// If lit (> eps), go dark; otherwise go to 100%. Returns the value it set.
+    @discardableResult
+    func toggle() throws -> Float {
         let eps: Float = 0.01
         let current = try getBrightness()
-        try setBrightness(current > eps ? 0.0 : 1.0)
+        let target: Float = current > eps ? 0.0 : 1.0
+        try setBrightness(target)
+        return target
     }
 }

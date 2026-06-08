@@ -1,0 +1,3 @@
+# Installed by `make sleep-setup` as /etc/sudoers.d/br
+# Lets __USER__ toggle clamshell/no-sleep without a password — and ONLY that.
+__USER__ ALL=(root) NOPASSWD: /usr/bin/pmset -c disablesleep 0, /usr/bin/pmset -c disablesleep 1

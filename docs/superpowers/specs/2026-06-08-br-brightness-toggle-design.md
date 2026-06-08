@@ -16,6 +16,12 @@
    is black you cannot see a terminal to type `br on`, so a global hotkey restores
    it. The Mac stays fully awake at 0% brightness, so the hotkey always fires.
 
+It also has an **opt-in clamshell coupling**: when set up (`make sleep-setup`),
+brightness 0% additionally runs `pmset disablesleep 1` so the Mac stays awake with
+the lid closed, and 100% runs `pmset disablesleep 0` to restore normal sleep. The
+privileged `pmset` runs via a tightly-scoped passwordless sudoers rule so it works
+from the hotkey even when the screen is black.
+
 ## Goals
 
 - Instantly set the built-in display brightness to 0% and back to 100%.
@@ -27,7 +33,8 @@
 ## Non-Goals (YAGNI)
 
 - External / DDC monitor control (built-in display only).
-- Display sleep / power-off (this is a *brightness* tool; the panel stays awake).
+- Putting the display to sleep / powering off the panel (brightness 0 keeps the
+  panel awake; sleep is only ever *disabled* via the opt-in clamshell coupling).
 - Persisting or restoring the pre-blackout brightness (toggle restores to a flat
   100%, per the agreed behavior).
 - Menu-bar UI / Dock icon (the agent is headless — `.accessory` activation policy).
@@ -71,7 +78,8 @@ One binary, three focused source files plus an entry dispatcher:
 |------|----------------|
 | `Sources/Brightness.swift` | Resolve the built-in display; load DisplayServices; `getBrightness` / `setBrightness` / `toggle` |
 | `Sources/CLI.swift` | Parse args; run `toggle` / `on` / `off` / `<N>` / `status` / help; map results to exit codes |
-| `Sources/Agent.swift` | Parse the hotkey config; register the Carbon global hotkey; run the accessory run loop; toggle on press |
+| `Sources/Agent.swift` | Parse the hotkey config; register the Carbon global hotkey; run the accessory run loop; act on press |
+| `Sources/Sleep.swift` | `sleepIntent` (pure decision), `setSleepDisabled` (`sudo -n pmset`), `applySleepCoupling` (opt-in, gated on the sudoers file) |
 | `Sources/main.swift` | Top-level entry: dispatch to `runAgent()` if first arg is `agent`, else `runCLI()` |
 
 (Swift permits top-level statements only in `main.swift`; the other files expose
@@ -140,11 +148,29 @@ case toggle:  get -> set (v > eps ? 0 : 1)       // on rc!=0: stderr, exit 1
   binding; the agent exits 1 only if **no** hotkey could be registered. launchd's
   default respawn throttle (~10s) prevents a tight crash loop.
 
+### Clamshell / sleep coupling (`Sleep.swift`)
+
+- **Decision (pure):** `sleepIntent(forBrightness:)` → `.disable` at ≤ 0.001,
+  `.enable` at ≥ 0.999, else `.leave`. So brightness endpoints 0% / 100% drive
+  clamshell; intermediate values leave sleep untouched.
+- **Application:** both CLI (`set`/`toggle`) and the agent (`performAction`) call
+  `applySleepCoupling(forBrightness:)` after changing brightness. It is **opt-in** —
+  gated on the existence of `/etc/sudoers.d/br`, so without setup `br` never calls
+  `pmset` and prints no warning (brightness behaves exactly as before).
+- **Privileged call:** `setSleepDisabled(_:)` runs
+  `sudo -n /usr/bin/pmset -c disablesleep <1|0>`. `-n` is non-interactive; with the
+  NOPASSWD sudoers rule it succeeds with no tty (works from the LaunchAgent). On
+  failure it prints `br: sleep control failed — run: sudo make sleep-setup` and
+  returns false; the brightness change still succeeds.
+- **Sudoers rule** (installed by `make sleep-setup`, validated with `visudo -cf`,
+  mode 0440 root:wheel at `/etc/sudoers.d/br`): grants the user NOPASSWD for **only**
+  `pmset -c disablesleep 0` and `pmset -c disablesleep 1` — nothing else.
+
 ## Build & Install
 
 Plain `swiftc` + `Makefile` (no SPM, no Xcode project):
 
-- `make` → `swiftc -O -o br Sources/Brightness.swift Sources/CLI.swift Sources/Agent.swift Sources/main.swift`
+- `make` → `swiftc -O -o br Sources/Brightness.swift Sources/CLI.swift Sources/Agent.swift Sources/Sleep.swift Sources/main.swift`
 - `make install` → `install -m 755 br "$(PREFIX)/bin/br"` (default `PREFIX=/usr/local`;
   may require `sudo`). Document `PREFIX=$HOME/.local` as a no-sudo alternative.
 - `make hotkey-install` → render `com.genie.br.plist` from a template with the
@@ -154,6 +180,11 @@ Plain `swiftc` + `Makefile` (no SPM, no Xcode project):
   `launchctl kickstart -k gui/$(id -u)/com.genie.br`.
 - `make hotkey-uninstall` → `launchctl bootout gui/$(id -u)/com.genie.br` (ignore if
   not loaded) and remove the plist.
+- `make sleep-setup` → render `sudoers/br.sudoers.template` for the invoking user
+  (`$${SUDO_USER:-$$(id -un)}`), `sudo visudo -cf` to validate, then
+  `sudo install -m 0440 -o root -g wheel` to `/etc/sudoers.d/br`. Run as the normal
+  user (recipe sudoes internally; one password prompt).
+- `make sleep-teardown` → `sudo rm -f /etc/sudoers.d/br`.
 - `make clean` → remove the built binary.
 - `make test` → non-destructive check (see Testing Strategy).
 
@@ -187,10 +218,13 @@ Screenbrightness/
   Sources/Brightness.swift
   Sources/CLI.swift
   Sources/Agent.swift
+  Sources/Sleep.swift
   Sources/main.swift
   launchd/com.genie.br.plist.template
+  sudoers/br.sudoers.template
   Makefile
   README.md
+  LICENSE
   docs/superpowers/specs/2026-06-08-br-brightness-toggle-design.md
 ```
 
@@ -204,6 +238,7 @@ Screenbrightness/
 | Hotkey registration fails (agent)  | `br: could not register hotkey <combo>`  | 1    |
 | Unknown command                    | usage text                               | 2    |
 | Non-integer / out-of-range percent | `br: brightness must be an integer 0-100`| 2    |
+| `pmset` fails despite sudoers rule | `br: sleep control failed — run: sudo make sleep-setup` | 0 (brightness still set) |
 
 Agent mode also logs non-fatal warnings (e.g. bad config line → using default) to
 stderr, which the LaunchAgent routes to `~/Library/Logs/br-agent.log`.
@@ -218,9 +253,14 @@ stderr, which the LaunchAgent routes to `~/Library/Logs/br-agent.log`.
   modifiers 6400; `parseBindings` maps `on = cmd+shift+0` / `off = cmd+shift+9` to
   the right `(keyCode, modifiers, action)`; comments/blank/unknown-action/bad-combo
   lines are skipped; a bare line becomes a toggle binding.
+- **Sleep-coupling unit check:** `sleepIntent(forBrightness:)` → `.disable` at 0.0,
+  `.enable` at 1.0, `.leave` at mid values (the `pmset` side effect itself is not
+  unit-tested — it needs root and changes system state).
 - **Manual:** `br status` shows current %; `br off` blacks the screen; the hotkey
-  (`⌃⌥⌘B`) restores it to 100%; pressing again blacks it; `br 50` lands at ~50%.
-  After `make hotkey-install`, the hotkey works in any app and survives logout/login.
+  restores it to 100%; pressing again blacks it; `br 50` lands at ~50%. After
+  `make hotkey-install`, the hotkey works in any app and survives logout/login.
+  After `make sleep-setup`: `br off` → `pmset -g` shows `SleepDisabled 1`, `br on`
+  → `0` (verified via CLI and via the hotkey/agent).
 
 ## Known Caveats (documented in README)
 
@@ -230,3 +270,7 @@ stderr, which the LaunchAgent routes to `~/Library/Logs/br-agent.log`.
 - Installing to `/usr/local/bin` may require `sudo`; `$HOME/.local/bin` avoids it.
 - The agent must run in the user's GUI (Aqua) session for the hotkey to register;
   the provided LaunchAgent ensures this.
+- Clamshell coupling keeps the Mac awake with the lid closed (`disablesleep 1`); on
+  battery this will keep draining, and `br on` (or `make sleep-teardown`) is needed
+  to restore normal sleep. The sudoers rule grants passwordless `pmset` for only the
+  two `disablesleep 0|1` commands.

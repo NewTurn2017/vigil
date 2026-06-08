@@ -123,13 +123,17 @@ private func actionID(_ a: HotkeyAction) -> UInt32 {
     }
 }
 
-/// Run the action identified by its Carbon hotkey id.
+/// Run the action identified by its Carbon hotkey id, including sleep/clamshell coupling.
 private func performAction(id: UInt32) {
     guard let d = try? BuiltinDisplay() else { return }
-    switch id {
-    case 1:  try? d.setBrightness(1.0)   // on
-    case 2:  try? d.setBrightness(0.0)   // off
-    default: try? d.toggle()             // toggle (id 3)
+    do {
+        switch id {
+        case 1:  try d.setBrightness(1.0); applySleepCoupling(forBrightness: 1.0)   // on
+        case 2:  try d.setBrightness(0.0); applySleepCoupling(forBrightness: 0.0)   // off
+        default: applySleepCoupling(forBrightness: try d.toggle())                  // toggle (id 3)
+        }
+    } catch {
+        // display lost between resolve and set; ignore
     }
 }
 

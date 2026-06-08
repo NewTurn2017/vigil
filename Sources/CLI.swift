@@ -75,8 +75,15 @@ func runCLI(_ args: [String]) -> Int32 {
     case .status:
         return withDisplay { d in print(Int((try d.getBrightness() * 100).rounded())) }
     case .set(let n):
-        return withDisplay { d in try d.setBrightness(Float(n) / 100.0) }
+        return withDisplay { d in
+            let v = Float(n) / 100.0
+            try d.setBrightness(v)
+            applySleepCoupling(forBrightness: v)
+        }
     case .toggle:
-        return withDisplay { d in try d.toggle() }
+        return withDisplay { d in
+            let v = try d.toggle()
+            applySleepCoupling(forBrightness: v)
+        }
     }
 }

@@ -72,6 +72,12 @@ checkEqual(parseBindings("# comment\n\non=cmd+shift+0\n").count, 1, "skip commen
 checkEqual(parseBindings("foo = cmd+b").count, 0, "unknown action skipped")
 checkEqual(parseBindings("on = cmd+nope").count, 0, "unparseable combo skipped")
 
+// === sleepIntent (clamshell coupling decision; pure, no pmset side effect) ===
+checkEqual(sleepIntent(forBrightness: 0.0), .disable, "0% -> disable sleep (clamshell)")
+checkEqual(sleepIntent(forBrightness: 1.0), .enable, "100% -> enable sleep")
+checkEqual(sleepIntent(forBrightness: 0.5), .leave, "50% -> leave sleep unchanged")
+checkEqual(sleepIntent(forBrightness: 0.34), .leave, "34% -> leave sleep unchanged")
+
 // === SUMMARY (keep last) ===
 print("\n\(testsRun - testsFailed)/\(testsRun) passed")
 exit(testsFailed == 0 ? 0 : 1)
