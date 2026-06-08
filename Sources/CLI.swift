@@ -31,3 +31,52 @@ func parseArgs(_ args: [String]) -> Command {
         return .usageError("unknown command or invalid percentage: \(first)")
     }
 }
+
+/// Print a line to stderr.
+func errPrint(_ s: String) {
+    FileHandle.standardError.write(Data((s + "\n").utf8))
+}
+
+func usageText() -> String {
+    return """
+    br — built-in display brightness toggle
+
+    usage:
+      br            toggle 0% <-> 100%
+      br on         set 100%
+      br off        set 0%
+      br <0-100>    set that percent
+      br status     print current percent
+      br agent      run the global-hotkey agent (usually launched by launchd)
+      br -h         show this help
+    """
+}
+
+/// Resolve the built-in display, run `body`, map any error to exit code 1.
+func withDisplay(_ body: (BuiltinDisplay) throws -> Void) -> Int32 {
+    do {
+        try body(BuiltinDisplay())
+        return 0
+    } catch {
+        errPrint("br: \(error)")
+        return 1
+    }
+}
+
+/// Run CLI mode; returns the process exit code.
+func runCLI(_ args: [String]) -> Int32 {
+    switch parseArgs(args) {
+    case .help:
+        print(usageText()); return 0
+    case .usageError(let msg):
+        errPrint("br: \(msg)"); errPrint(usageText()); return 2
+    case .agent:
+        return runAgent()
+    case .status:
+        return withDisplay { d in print(Int((try d.getBrightness() * 100).rounded())) }
+    case .set(let n):
+        return withDisplay { d in try d.setBrightness(Float(n) / 100.0) }
+    case .toggle:
+        return withDisplay { d in try d.toggle() }
+    }
+}
