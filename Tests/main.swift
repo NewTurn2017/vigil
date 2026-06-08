@@ -88,6 +88,14 @@ checkEqual(parseArgs(["awake", "status"]), .awakeStatus, "awake status -> .awake
 check(isUsageError(parseArgs(["awake"])), "awake alone -> usageError")
 check(isUsageError(parseArgs(["awake", "bad"])), "awake bad -> usageError")
 
+// === power-mode hotkeys ===
+check(parseBindings("work = cmd+shift+0").first == Binding(hotkey: Hotkey(keyCode: 29, modifiers: 768), action: .work), "work binding")
+check(parseBindings("away = cmd+shift+9").first == Binding(hotkey: Hotkey(keyCode: 25, modifiers: 768), action: .away), "away binding")
+check(parseBindings("sleep = cmd+shift+8").first == Binding(hotkey: Hotkey(keyCode: 28, modifiers: 768), action: .sleep), "sleep binding")
+checkEqual(actionID(.work), 4, "actionID work = 4")
+checkEqual(actionID(.away), 5, "actionID away = 5")
+checkEqual(actionID(.sleep), 6, "actionID sleep = 6")
+
 // === SUMMARY (keep last) ===
 print("\n\(testsRun - testsFailed)/\(testsRun) passed")
 exit(testsFailed == 0 ? 0 : 1)

@@ -12,6 +12,9 @@ enum HotkeyAction: Equatable {
     case on       // set 100%
     case off      // set 0%
     case toggle   // 0% <-> 100%
+    case work     // keep awake + screen on
+    case away     // keep awake + screen off now
+    case sleep    // sleep the Mac now
 }
 
 /// A hotkey bound to an action.
@@ -85,8 +88,11 @@ func parseBindings(_ text: String) -> [Binding] {
             case "on":     action = .on
             case "off":    action = .off
             case "toggle": action = .toggle
+            case "work":   action = .work
+            case "away":   action = .away
+            case "sleep":  action = .sleep
             default:
-                errPrint("br: unknown action '\(lhs)' (use on/off/toggle), skipping")
+                errPrint("br: unknown action '\(lhs)' (use on/off/toggle/work/away/sleep), skipping")
                 continue
             }
         }
@@ -115,16 +121,25 @@ func loadBindings() -> [Binding] {
 }
 
 /// Fixed Carbon hotkey id per action — lets the (stateless) event handler tell them apart.
-private func actionID(_ a: HotkeyAction) -> UInt32 {
+func actionID(_ a: HotkeyAction) -> UInt32 {
     switch a {
     case .on:     return 1
     case .off:    return 2
     case .toggle: return 3
+    case .work:   return 4
+    case .away:   return 5
+    case .sleep:  return 6
     }
 }
 
 /// Run the action identified by its Carbon hotkey id, including sleep/clamshell coupling.
 private func performAction(id: UInt32) {
+    switch id {
+    case 4: _ = runWork();  return
+    case 5: _ = runAway();  return
+    case 6: _ = runSleep(); return
+    default: break
+    }
     guard let d = try? BuiltinDisplay() else { return }
     do {
         switch id {
