@@ -60,25 +60,39 @@ private func pmsetAction(_ action: String) -> Bool {
 
 func sleepNow() -> Bool { pmsetAction("sleepnow") }
 
-/// work: keep-awake ON + brightness 100%.
+/// Tell the running agent to show/hide black overlays over every display (so external
+/// monitors go black too — DisplayServices brightness only covers the built-in).
+/// Fire-and-forget Darwin notification; a no-op if the agent isn't running.
+func setOverlays(on: Bool) {
+    let name = on ? "com.genie.vigil.overlay.on" : "com.genie.vigil.overlay.off"
+    CFNotificationCenterPostNotification(
+        CFNotificationCenterGetDarwinNotifyCenter(),
+        CFNotificationName(name as CFString), nil, nil, true)
+}
+
+/// work: keep-awake ON + brightness 100% + remove any black overlays.
 func runWork() -> Int32 {
     var ok = true
     if !awakeEnsureOn() { errPrint("vigil: keep-awake unavailable — run: make hotkey-install"); ok = false }
     do { try BuiltinDisplay().setBrightness(1.0) } catch { errPrint("vigil: \(error)"); ok = false }
+    setOverlays(on: false)
     return ok ? 0 : 1
 }
 
-/// away: keep-awake ON + brightness 0% (screen black, no display sleep → no lock/password).
+/// away: keep-awake ON + brightness 0% + black overlay on all displays (incl. externals).
+/// No display sleep → no lock/password.
 func runAway() -> Int32 {
     var ok = true
     if !awakeEnsureOn() { errPrint("vigil: keep-awake unavailable — run: make hotkey-install"); ok = false }
     do { try BuiltinDisplay().setBrightness(0.0) } catch { errPrint("vigil: \(error)"); ok = false }
+    setOverlays(on: true)
     return ok ? 0 : 1
 }
 
-/// sleep: keep-awake OFF + sleep now.
+/// sleep: keep-awake OFF + remove overlays + sleep now.
 func runSleep() -> Int32 {
     awakeOff()
+    setOverlays(on: false)
     if !sleepNow() { errPrint("vigil: sleepnow failed"); return 1 }
     return 0
 }

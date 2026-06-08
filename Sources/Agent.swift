@@ -152,6 +152,35 @@ private func performAction(id: UInt32) {
     }
 }
 
+// Black overlay windows (held by the agent) that blank every display — including
+// external monitors, which DisplayServices brightness cannot touch — without using
+// display sleep (so macOS never locks / asks for a password).
+nonisolated(unsafe) var overlayWindows: [NSWindow] = []
+
+/// Cover every display with an opaque black, top-level window.
+func showOverlays() {
+    hideOverlays()
+    for screen in NSScreen.screens {
+        let w = NSWindow(contentRect: screen.frame, styleMask: .borderless,
+                         backing: .buffered, defer: false)
+        w.isOpaque = true
+        w.backgroundColor = .black
+        w.level = .screenSaver                 // above normal windows and the menu bar
+        w.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+        w.isReleasedWhenClosed = false
+        w.ignoresMouseEvents = false           // absorb stray clicks while "away"
+        w.setFrame(screen.frame, display: true)
+        w.orderFrontRegardless()
+        overlayWindows.append(w)
+    }
+}
+
+/// Remove the black overlays.
+func hideOverlays() {
+    for w in overlayWindows { w.orderOut(nil) }
+    overlayWindows.removeAll()
+}
+
 /// Run the headless global-hotkey agent. Blocks in the app run loop on success;
 /// returns a nonzero exit code if no hotkey could be registered.
 func runAgent() -> Int32 {
@@ -187,6 +216,15 @@ func runAgent() -> Int32 {
         errPrint("vigil: no hotkeys could be registered")
         return 1
     }
+
+    // Listen for overlay show/hide requests (posted by `away`/`work` from any process).
+    let darwin = CFNotificationCenterGetDarwinNotifyCenter()
+    CFNotificationCenterAddObserver(darwin, nil, { _, _, _, _, _ in
+        DispatchQueue.main.async { showOverlays() }
+    }, "com.genie.vigil.overlay.on" as CFString, nil, .deliverImmediately)
+    CFNotificationCenterAddObserver(darwin, nil, { _, _, _, _, _ in
+        DispatchQueue.main.async { hideOverlays() }
+    }, "com.genie.vigil.overlay.off" as CFString, nil, .deliverImmediately)
 
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)   // headless: no Dock icon, no menu bar
