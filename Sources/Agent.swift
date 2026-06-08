@@ -1,4 +1,6 @@
 import Foundation
+import Cocoa
+import Carbon.HIToolbox
 
 struct Hotkey: Equatable {
     var keyCode: UInt32
@@ -66,8 +68,30 @@ func loadHotkey() -> Hotkey {
     return defaultHotkey
 }
 
-// TEMPORARY stub — replaced by the real agent in Task 6.
+/// Run the headless global-hotkey agent. Blocks in the app run loop on success;
+/// returns a nonzero exit code if the hotkey could not be registered.
 func runAgent() -> Int32 {
-    errPrint("br: agent not implemented yet")
-    return 1
+    let hk = loadHotkey()
+
+    // Handle hotkey-pressed events by toggling brightness.
+    var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
+                             eventKind: UInt32(kEventHotKeyPressed))
+    InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in
+        try? BuiltinDisplay().toggle()   // fresh resolve each press; dlopen is cached
+        return noErr
+    }, 1, &spec, nil, nil)
+
+    var ref: EventHotKeyRef?
+    let id = EventHotKeyID(signature: OSType(0x6272_746b), id: 1) // 'brtk'
+    let status = RegisterEventHotKey(hk.keyCode, hk.modifiers, id,
+                                     GetApplicationEventTarget(), 0, &ref)
+    guard status == noErr else {
+        errPrint("br: could not register hotkey (status \(status)); is the combo already in use?")
+        return 1
+    }
+
+    let app = NSApplication.shared
+    app.setActivationPolicy(.accessory)   // headless: no Dock icon, no menu bar
+    app.run()
+    return 0   // not reached
 }
